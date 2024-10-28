@@ -22,30 +22,34 @@ def apply_kernel(image, kernel):
             output[i, j] = torch.sum(image[i : i + rk, j : j + ck] * kernel)
     return output
 
-def accuracy(outputs, labels):
-    _, preds = torch.max(outputs,dim = 1)
-    return torch.tensor(torch.sum(preds == labels).item() / len(preds))
-
 class ImageClassificationBase(nn.Module):
     def training_step(self, batch):
-        images, labels = batch
-        out = self(images)
-        loss = F.cross_entropy(out, labels)
+        images, labels = batch 
+        out = self(images)                  # Generate predictions
+        loss = F.cross_entropy(out, labels) # Calculate loss
         return loss
     
     def validation_step(self, batch):
-        images, labels = batch
-        out = self(images)
-        loss = F.cross_entropy(out, labels)
-        acc = accuracy(out, labels)
-        return {'val_loss': loss.detach(), 'val_acc' : acc}
-    
+        images, labels = batch 
+        out = self(images)                    # Generate predictions
+        loss = F.cross_entropy(out, labels)   # Calculate loss
+        acc = accuracy(out, labels)           # Calculate accuracy
+        return {'val_loss': loss.detach(), 'val_acc': acc}
+        
     def validation_epoch_end(self, outputs):
         batch_losses = [x['val_loss'] for x in outputs]
-        epoch_loss = torch.stack(batch_losses).mean()
+        epoch_loss = torch.stack(batch_losses).mean()   # Combine losses
         batch_accs = [x['val_acc'] for x in outputs]
-        epoch_acc = torch.stack(batch_accs).mean()
-        return {'val_loss': epoch_loss.item(), 'val_acc' : epoch_acc.item()}
+        epoch_acc = torch.stack(batch_accs).mean()      # Combine accuracies
+        return {'val_loss': epoch_loss.item(), 'val_acc': epoch_acc.item()}
+    
+    def epoch_end(self, epoch, result):
+        print("Epoch [{}], train_loss: {:.4f}, val_loss: {:.4f}, val_acc: {:.4f}".format(
+            epoch, result['train_loss'], result['val_loss'], result['val_acc']))
+        
+def accuracy(outputs, labels):
+    _, preds = torch.max(outputs, dim=1)
+    return torch.tensor(torch.sum(preds == labels).item() / len(preds))
 
 class ThisnnModel(ImageClassificationBase):
     def __init__(self):
@@ -119,7 +123,7 @@ def fit(epochs, lr, model, train_loader, val_loader, opt_func = torch.optim.SGD)
         model.train()
         train_losses = []
         for batch in train_loader:
-            loss = model.trainng_step(batch)
+            loss = model.training_step(batch)
             train_losses.append(loss)
             loss.backward()
             optimizer.step()
@@ -131,38 +135,86 @@ def fit(epochs, lr, model, train_loader, val_loader, opt_func = torch.optim.SGD)
         history.append(result)
     return history
 
-dataset_url = "https://s3.amazonaws.com/fast-ai-imageclas/cifar10.tgz"
-download_url(dataset_url, '.')
+def plot_accuracies(history):
+    accuracies = [x['val_acc'] for x in history]
+    plt.plot(accuracies, '-x')
+    plt.xlabel('epoch')
+    plt.ylabel('accuracy')
+    plt.title('Accuracy vs epochs')
 
-with tarfile.open('./cifar10.tgz', 'r:gz') as tar:
-    tar.extractall(path = './data')
+def predict_image(img, model):
+    xb = to_device(img.unsqueeze(0), device)
+    yb = model(xb)
+    _, preds = torch.max(yb, dim = 1)
+    return dataset.classes[preds[0].item()]
 
-classes = os.listdir('./data/cifar10/train')
-dataset = ImageFolder('./data/cifar10/train', transform=ToTensor())
+if __name__ == '__main__':
+    dataset_url = "https://s3.amazonaws.com/fast-ai-imageclas/cifar10.tgz"
+    download_url(dataset_url, '.')
 
-matplotlib.rcParams['figure.facecolor'] = '#ffffff'
+    with tarfile.open('./cifar10.tgz', 'r:gz') as tar:
+        tar.extractall(path = './data')
 
-random_seed = 36
-torch.manual_seed(random_seed)
+    classes = os.listdir('./data/cifar10/train')
+    dataset = ImageFolder('./data/cifar10/train', transform=ToTensor())
+    test_dataset = ImageFolder('./data/cifar10/test', transform=ToTensor())
 
-val_size = 5000 #tap xac thuc
-train_size = len(dataset) - val_size #tap train = 50000 - 5000
-train_ds, val_ds = random_split(dataset, [train_size, val_size]) # chia dataset thanh 2 phan la validation va train
-batch_size = 128
+    matplotlib.rcParams['figure.facecolor'] = '#ffffff'
 
-train_dl = DataLoader(train_ds, batch_size, shuffle=True, num_workers= 4, pin_memory=True)
-val_dl = DataLoader(val_ds, batch_size * 2, num_workers= 4, pin_memory= True)
+    random_seed = 36
+    torch.manual_seed(random_seed)
 
-simple_model = nn.Sequential(
-    nn.Conv2d(3, 8, kernel_size= 3, stride= 1, padding= 1),
-    nn.MaxPool2d(2, 2)
-)
+    val_size = 5000 #tap xac thuc
+    train_size = len(dataset) - val_size #tap train = 50000 - 5000
+    train_ds, val_ds = random_split(dataset, [train_size, val_size]) # chia dataset thanh 2 phan la validation va train
+    batch_size = 128
 
-model = ThisnnModel()
+    train_dl = DataLoader(train_ds, batch_size, shuffle=True, num_workers= 4, pin_memory=True)
+    val_dl = DataLoader(val_ds, batch_size * 2, num_workers= 4, pin_memory= True)
 
-device = get_default_device()
+    simple_model = nn.Sequential(
+        nn.Conv2d(3, 8, kernel_size= 3, stride= 1, padding= 1),
+        nn.MaxPool2d(2, 2)
+    )
 
-traindl = DeviceDataLoader(train_dl, device)
-val_dl = DeviceDataLoader(val_dl, device)
-to_device(model, device)
+    model = ThisnnModel()
 
+    device = get_default_device()
+
+    train_dl = DeviceDataLoader(train_dl, device)
+    val_dl = DeviceDataLoader(val_dl, device)
+    to_device(model, device)
+
+    model = to_device(ThisnnModel(), device)
+
+    num_epochs = 10
+    opt_func = torch.optim.Adam # ham toi uu
+    lr = 0.001
+
+    history = fit(num_epochs, lr, model, train_dl, val_dl, opt_func)
+    plot_accuracies(history)
+
+    #test model ngau nhien
+    img, label = test_dataset[0]
+    plt.imshow(img.permute(1, 2, 0))
+    print('Label:', dataset.classes[label], ', Predicted:', predict_image(img, model))
+
+    img, label = test_dataset[123]
+    plt.imshow(img.permute(1, 2, 0))
+    print('Label:', dataset.classes[label], ', Predicted:', predict_image(img, model))
+
+    img, label = test_dataset[1234]
+    plt.imshow(img.permute(1, 2, 0))
+    print('Label:', dataset.classes[label], ', Predicted:', predict_image(img, model))
+
+    img, label = test_dataset[2345]
+    plt.imshow(img.permute(1, 2, 0))
+    print('Label:', dataset.classes[label], ', Predicted:', predict_image(img, model))
+
+    # ton that va do chinh xac
+    test_loader = DeviceDataLoader(DataLoader(test_dataset, batch_size*2), device)
+    result = evaluate(model, test_loader)
+    print(result)
+
+    # luu lai model(luu lai trong so)
+    torch.save(model.state_dict(), 'ImageClassification32x32fromCifar10-cnn.pth')
